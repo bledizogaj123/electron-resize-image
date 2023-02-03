@@ -1,76 +1,144 @@
-const path = require('path')
-const { app, BrowserWindow, Menu } = require('electron');
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
+const resizeImg = require('resize-img');
+const { app, BrowserWindow, Menu, ipcMain, shell } = require('electron');
 
-const isDev = process.env.NODE_ENV === 'development';
-const isMac = process.platfom === 'darwin'
+const isDev = process.env.NODE_ENV !== 'production';
+const isMac = process.platform === 'darwin';
 
-//Create the main Window
+let mainWindow;
+let aboutWindow;
+
+// Main Window
 function createMainWindow() {
-    const mainWindow = new BrowserWindow({
-        title: "Image Resizer",
-        width: isDev ? 1000 : 500,
-        height: 600,
-    });
+  mainWindow = new BrowserWindow({
+    width: isDev ? 1000 : 500,
+    height: 600,
+    icon: `${__dirname}/assets/icons/Icon_256x256.png`,
+    resizable: isDev,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+  });
 
-    //Open devtools if in dev env
-    if (isDev) {
-        mainWindow.webContents.openDevTools();
-    }
-
-    mainWindow.loadFile(path.join(__dirname, './renderer/index.html'));
+  // Show devtools automatically if in development
+  if (isDev) {
+    mainWindow.webContents.openDevTools();
+  }
+   mainWindow.loadFile(path.join(__dirname, './renderer/index.html'));
 }
-//Create about window
+
+// About Window
 function createAboutWindow() {
-    const aboutWindow = new BrowserWindow({
-        title: "About Image Resizer",
-        width: 300,
-        height: 300,
-    });
+  aboutWindow = new BrowserWindow({
+    width: 300,
+    height: 300,
+    title: 'About Electron',
+    icon: `${__dirname}/assets/icons/Icon_256x256.png`,
+  });
 
-    aboutWindow.loadFile(path.join(__dirname, './renderer/about.html'));
-
+   aboutWindow.loadFile(path.join(__dirname, './renderer/about.html'));
 }
 
-//App is ready
-app.whenReady().then(() => {
-    createMainWindow();
+// When the app is ready, create the window
+app.on('ready', () => {
+  createMainWindow();
 
-    //Implement menu
-    const mainMenu = Menu.buildFromTemplate(menu);
-    Menu.setApplicationMenu(mainMenu);
+  const mainMenu = Menu.buildFromTemplate(menu);
+  Menu.setApplicationMenu(mainMenu);
 
-    app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) {
-            createMainWindow();
-        }
-    })
+  // Remove variable from memory
+  mainWindow.on('closed', () => (mainWindow = null));
 });
 
-//Menu template
+// Menu template
 const menu = [
-    ...(isMac ? [{
-        label: app.name,
-        submenu: [
+  ...(isMac
+    ? [
+        {
+          label: app.name,
+          submenu: [
             {
-                label: 'About',
-                click: createAboutWindow,
-            }
-        ]
-    }] : []),
-    {
-        role: 'fileMenu',
-    },
-    ...(!isMac ? [{
-        label: 'Help',
-        submenu: [{
-            label: 'About',
-            click: createAboutWindow,
-        }]
-    }] : [])
+              label: 'About',
+              click: createAboutWindow,
+            },
+          ],
+        },
+      ]
+    : []),
+  {
+    role: 'fileMenu',
+  },
+  ...(!isMac
+    ? [
+        {
+          label: 'Help',
+          submenu: [
+            {
+              label: 'About',
+              click: createAboutWindow,
+            },
+          ],
+        },
+      ]
+    : []),
+
+  ...(isDev
+    ? [
+        {
+          label: 'Developer',
+          submenu: [
+            { role: 'reload' },
+            { role: 'forcereload' },
+            { type: 'separator' },
+            { role: 'toggledevtools' },
+          ],
+        },
+      ]
+    : []),
 ];
 
-app.on('window-all-closed', () => {
-    if (!isMac) {
-        app.quit()
+// Respond to the resize image event
+ipcMain.on('image:resize', (e, options) => {
+  options.dest = path.join(os.homedir(), 'imageresizer');
+  resizeImage(options);
+});
+
+// Resize and save image
+async function resizeImage({ imgPath, height, width, dest }) {
+  try {
+
+    // Resize image
+    const newPath = await resizeImg(fs.readFileSync(imgPath), {
+      width: +width,
+      height: +height,
+    });
+
+    const filename = path.basename(imgPath);
+
+    if (!fs.existsSync(dest)) {
+      fs.mkdirSync(dest);
     }
-})
+
+    fs.writeFileSync(path.join(dest, filename), newPath);
+
+    // Send success to renderer
+    mainWindow.webContents.send('image:done');
+
+    // Open the folder in the file explorer
+    shell.openPath(dest);
+  } catch (err) {
+    console.log(err);
+  }
+}
+
+app.on('window-all-closed', () => {
+  if (!isMac) app.quit();
+});
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+});
